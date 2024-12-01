@@ -1,4 +1,4 @@
-*/unet/
+config.json
 *.safetensors
 
 # Byte-compiled / optimized / DLL files
