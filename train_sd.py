@@ -1,7 +1,9 @@
 import os
 import random
+import numpy as np
 from glob import glob
 from tqdm.auto import tqdm
+from contextlib import contextmanager
 from PIL import Image
 
 import torch
@@ -47,6 +49,36 @@ class T2iDataset(Dataset):
         return {"pixels": pixels, "caption": caption}
 
 
+@contextmanager
+def temp_rng(new_seed=None):
+	"""
+    https://github.com/fpgaminer/bigasp-training/blob/main/utils.py#L73
+	Context manager that saves and restores the RNG state of PyTorch, NumPy and Python.
+	If new_seed is not None, the RNG state is set to this value before the context is entered.
+	"""
+
+	# Save RNG state
+	old_torch_rng_state = torch.get_rng_state()
+	old_torch_cuda_rng_state = torch.cuda.get_rng_state()
+	old_numpy_rng_state = np.random.get_state()
+	old_python_rng_state = random.getstate()
+
+	# Set new seed
+	if new_seed is not None:
+		torch.manual_seed(new_seed)
+		torch.cuda.manual_seed(new_seed)
+		np.random.seed(new_seed)
+		random.seed(new_seed)
+
+	yield
+
+	# Restore RNG state
+	torch.set_rng_state(old_torch_rng_state)
+	torch.cuda.set_rng_state(old_torch_cuda_rng_state)
+	np.random.set_state(old_numpy_rng_state)
+	random.setstate(old_python_rng_state)
+
+
 def train(
     output_path = "./experiments/",
     dataset_path = None,
@@ -55,6 +87,7 @@ def train(
     val_steps = 100,
     seed = None,
     batch_size = 1,
+    val_repeats = 4,
     device = "cuda",
 ):
     if seed is not None:
@@ -84,10 +117,21 @@ def train(
         drop_last = False,
     )
     
+    test_dataset = T2iDataset(os.path.join(dataset_path, "test"))
+    test_dataloader = DataLoader(
+        dataset = test_dataset,
+        batch_size = 1,
+        shuffle = False,
+        collate_fn = collate_batch,
+        num_workers = 0,
+        pin_memory = True,
+        drop_last = False,
+    )
+    
     val_dataset = T2iDataset(os.path.join(dataset_path, "val"))
     val_dataloader = DataLoader(
         dataset = val_dataset,
-        batch_size = batch_size,
+        batch_size = 1,
         shuffle = False,
         collate_fn = collate_batch,
         num_workers = 0,
@@ -107,7 +151,7 @@ def train(
     unet.requires_grad_(True)
     unet.train()
     
-    train_lr = lr * batch_size
+    train_lr = lr * (batch_size ** 0.5)
     optimizer = torch.optim.AdamW(
         unet.parameters(),
         lr = train_lr,
@@ -133,7 +177,7 @@ def train(
     
     def vae_encode(pixels):
         latents = vae.encode(pixels.to(device)).latent_dist.sample()
-        return latents * 0.18215
+        return latents * vae.config.scaling_factor
     
     def sample_timesteps(latents, generator=None):
         timesteps = torch.randint(
@@ -163,35 +207,69 @@ def train(
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
         return encoder_hidden_states, timesteps, noise, noisy_latents
     
+    def get_pred(batch, dropout=0, offset=0):
+        pixels, captions = batch
+        encoder_hidden_states = encode_captions(captions, dropout=dropout)
+        latents = vae_encode(pixels)
+        timesteps = sample_timesteps(latents)
+        noise = sample_noise(latents, offset=offset)
+        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+        model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
+        # return noise, model_pred, timesteps
+        return mse_loss(model_pred, noise, timesteps)
+    
+    def mse_loss(pred, target, timesteps=None):
+        loss = F.mse_loss(pred.float(), target.float(), reduction="none")
+        loss = loss.mean(dim=list(range(1, len(loss.shape)))) # reduce over all dimensions except batch
+        # if timesteps is not None: # debias by loss/timestep fit function
+        debiased_loss = loss / (0.7365 * torch.exp(-0.0052 * timesteps))
+        return loss.mean(), debiased_loss.mean()
+        # return loss.mean()
+    
     global_step = 0
     progress_bar = tqdm(range(0, train_steps))
     while global_step < train_steps:
         for step, batch in enumerate(train_dataloader):
             optimizer.zero_grad()
-            encoder_hidden_states, timesteps, noise, noisy_latents = prepare_inputs(batch)
-            model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
-            loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
-            t_writer.add_scalar("loss/train", loss.detach().item(), global_step)
+            # encoder_hidden_states, timesteps, noise, noisy_latents = prepare_inputs(batch)
+            # model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
+            # loss, debiased_loss = mse_loss(model_pred, noise, timesteps)
+            loss, debiased_loss = get_pred(batch)
+            t_writer.add_scalar("loss/train", loss.detach().item(), global_step * batch_size)
+            t_writer.add_scalar("loss/debiased", debiased_loss.detach().item(), global_step * batch_size)
             
             loss.backward()
             optimizer.step()
             progress_bar.update(1)
             global_step += 1
             
-            if global_step % val_steps == 0:
+            if global_step == 1 or global_step % val_steps == 0:
                 with torch.inference_mode():
-                    all_loss = 0.0
-                    repeat = 4
-                    for i in range(repeat):
+                    test_loss = 0.0
+                    val_loss = 0.0
+                    for i in range(val_repeats):
+                        for step, batch in enumerate(test_dataloader):
+                            # gen_cuda = torch.Generator(device=device)
+                            # gen_cuda.manual_seed(seed + step + i * 1000)
+                            # encoder_hidden_states, timesteps, noise, noisy_latents = prepare_inputs(batch, generator=gen_cuda)
+                            # model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
+                            # _, debiased_loss = mse_loss(model_pred, noise, timesteps)
+                            with temp_rng(seed + step + i * 1000):
+                                _, debiased_loss = get_pred(batch)
+                            test_loss += debiased_loss.detach().item()
+                        
                         for step, batch in enumerate(val_dataloader):
-                            gen_cuda = torch.Generator(device=device)
-                            gen_cuda.manual_seed(seed + step + i * 1000)
-                            encoder_hidden_states, timesteps, noise, noisy_latents = prepare_inputs(batch, generator=gen_cuda)
-                            model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
-                            val_loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
-                            all_loss += val_loss.detach().item()
-                    all_loss = all_loss / (len(val_dataloader) * repeat)
-                    t_writer.add_scalar("test/val", all_loss, global_step)
+                            # gen_cuda = torch.Generator(device=device)
+                            # gen_cuda.manual_seed(seed + step + i * 1000)
+                            # encoder_hidden_states, timesteps, noise, noisy_latents = prepare_inputs(batch, generator=gen_cuda)
+                            # model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
+                            # _, debiased_loss = mse_loss(model_pred, noise, timesteps)
+                            with temp_rng(seed + step + i * 1000):
+                                _, debiased_loss = get_pred(batch)
+                            val_loss += debiased_loss.detach().item()
+                    
+                    t_writer.add_scalar("test/test", test_loss / (len(test_dataloader) * val_repeats), global_step * batch_size)
+                    t_writer.add_scalar("test/val", val_loss / (len(val_dataloader) * val_repeats), global_step * batch_size)
             
             if global_step >= train_steps:
                 break
@@ -200,18 +278,21 @@ def train(
 
 
 if __name__ == "__main__":
-    experiment_name = "./experiments/long_lr_sweep/"
-    lr_sweep = [1e-7, 2e-7, 3e-7, 5e-7, 1e-6, 5e-6]
+    experiment_name = "./experiments/seed_new/"
+    # lr_sweep = [1e-7, 2e-7, 3e-7, 5e-7, 1e-6, 5e-6]
+    lr_sweep = [5e-7,]
     
     dataset_path = "E:/datasets/yann/v1"
-    train_steps = 10_000
-    val_steps = 100
+    train_steps = 1250
+    val_steps = 25
     seed = 1234
-    batch_size = 1
+    batch_size = 4
+    val_repeats = 8
     device = "cuda"
     
     for lr in lr_sweep:
-        output_path = experiment_name + f"{lr:.1e}/"
+        # output_path = experiment_name + f"{lr:.1e}/"
+        output_path = experiment_name + f"{seed}/"
         train(
             output_path = output_path,
             dataset_path = dataset_path,
@@ -220,5 +301,6 @@ if __name__ == "__main__":
             val_steps = val_steps,
             seed = seed,
             batch_size = batch_size,
+            val_repeats = val_repeats,
             device = device,
         )
