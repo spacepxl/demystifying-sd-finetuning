@@ -158,12 +158,11 @@ def train(
         weight_decay = 1e-4,
     )
     
-    def encode_captions(captions, dropout=0, generator=None):
+    def encode_captions(captions, dropout=0):
         input_ids = []
         for caption in captions:
-            if dropout > 0:
-                if torch.rand(1, generator=generator) < dropout:
-                    caption = "" # caption dropout for better CFG
+            if torch.rand(1) < dropout:
+                caption = "" # caption dropout for better CFG
             ids = tokenizer(
                 caption,
                 max_length=tokenizer.model_max_length, 
@@ -179,61 +178,44 @@ def train(
         latents = vae.encode(pixels.to(device)).latent_dist.sample()
         return latents * vae.config.scaling_factor
     
-    def sample_timesteps(latents, generator=None):
+    def sample_timesteps(latents, timestep_range=None):
+        min_timestep = timestep_range[0] if timestep_range is not None else 0
+        max_timestep = timestep_range[1] if timestep_range is not None else noise_scheduler.config.num_train_timesteps
         timesteps = torch.randint(
-            0,
-            noise_scheduler.config.num_train_timesteps,
+            min_timestep,
+            max_timestep,
             (latents.shape[0],),
             device = latents.device,
-            generator=generator,
             ).long()
         return timesteps
     
-    def randn_like_g(x, generator=None):
-        return torch.randn(x.size(), generator=generator, dtype=x.dtype, layout=x.layout, device=x.device)
-    
-    def sample_noise(latents, offset=0, generator=None):
-        noise = randn_like_g(latents, generator=generator)
+    def sample_noise(latents, offset=0):
+        noise = torch.randn_like(latents)
         if offset > 0:
-            noise += offset * randn_like_g(latents[..., 0, 0], generator=generator)[..., None, None]
+            noise += offset * torch.randn_like(latents[..., 0, 0])[..., None, None]
         return noise
     
-    def prepare_inputs(batch, dropout=0, offset=0, generator=None):
-        pixels, captions = batch
-        encoder_hidden_states = encode_captions(captions, dropout=dropout, generator=generator)
-        latents = vae_encode(pixels)
-        timesteps = sample_timesteps(latents, generator=generator)
-        noise = sample_noise(latents, offset=offset, generator=generator)
-        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-        return encoder_hidden_states, timesteps, noise, noisy_latents
+    def mse_loss(pred, target, timesteps):
+        loss = F.mse_loss(pred.float(), target.float(), reduction="none")
+        loss = loss.mean(dim=list(range(1, len(loss.shape)))) # reduce over all dimensions except batch
+        debiased_loss = loss / (0.7365 * torch.exp(-0.0052 * timesteps)) # debias by loss/timestep fit function
+        return loss.mean(), debiased_loss.mean()
     
-    def get_pred(batch, dropout=0, offset=0):
+    def get_pred(batch, dropout=0, offset=0, timestep_range=None):
         pixels, captions = batch
         encoder_hidden_states = encode_captions(captions, dropout=dropout)
         latents = vae_encode(pixels)
-        timesteps = sample_timesteps(latents)
+        timesteps = sample_timesteps(latents, timestep_range=timestep_range)
         noise = sample_noise(latents, offset=offset)
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
         model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
-        # return noise, model_pred, timesteps
         return mse_loss(model_pred, noise, timesteps)
-    
-    def mse_loss(pred, target, timesteps=None):
-        loss = F.mse_loss(pred.float(), target.float(), reduction="none")
-        loss = loss.mean(dim=list(range(1, len(loss.shape)))) # reduce over all dimensions except batch
-        # if timesteps is not None: # debias by loss/timestep fit function
-        debiased_loss = loss / (0.7365 * torch.exp(-0.0052 * timesteps))
-        return loss.mean(), debiased_loss.mean()
-        # return loss.mean()
     
     global_step = 0
     progress_bar = tqdm(range(0, train_steps))
     while global_step < train_steps:
         for step, batch in enumerate(train_dataloader):
             optimizer.zero_grad()
-            # encoder_hidden_states, timesteps, noise, noisy_latents = prepare_inputs(batch)
-            # model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
-            # loss, debiased_loss = mse_loss(model_pred, noise, timesteps)
             loss, debiased_loss = get_pred(batch)
             t_writer.add_scalar("loss/train", loss.detach().item(), global_step * batch_size)
             t_writer.add_scalar("loss/debiased", debiased_loss.detach().item(), global_step * batch_size)
@@ -244,28 +226,18 @@ def train(
             global_step += 1
             
             if global_step == 1 or global_step % val_steps == 0:
-                with torch.inference_mode():
+                with torch.inference_mode(), temp_rng(seed):
                     test_loss = 0.0
                     val_loss = 0.0
                     for i in range(val_repeats):
+                        min_timestep = int(i * noise_scheduler.config.num_train_timesteps / val_repeats)
+                        max_timestep = int((i + 1) * noise_scheduler.config.num_train_timesteps / val_repeats)
                         for step, batch in enumerate(test_dataloader):
-                            # gen_cuda = torch.Generator(device=device)
-                            # gen_cuda.manual_seed(seed + step + i * 1000)
-                            # encoder_hidden_states, timesteps, noise, noisy_latents = prepare_inputs(batch, generator=gen_cuda)
-                            # model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
-                            # _, debiased_loss = mse_loss(model_pred, noise, timesteps)
-                            with temp_rng(seed + step + i * 1000):
-                                _, debiased_loss = get_pred(batch)
+                            _, debiased_loss = get_pred(batch, timestep_range=(min_timestep, max_timestep))
                             test_loss += debiased_loss.detach().item()
                         
                         for step, batch in enumerate(val_dataloader):
-                            # gen_cuda = torch.Generator(device=device)
-                            # gen_cuda.manual_seed(seed + step + i * 1000)
-                            # encoder_hidden_states, timesteps, noise, noisy_latents = prepare_inputs(batch, generator=gen_cuda)
-                            # model_pred = unet(noisy_latents, timesteps, encoder_hidden_states, return_dict=False)[0]
-                            # _, debiased_loss = mse_loss(model_pred, noise, timesteps)
-                            with temp_rng(seed + step + i * 1000):
-                                _, debiased_loss = get_pred(batch)
+                            _, debiased_loss = get_pred(batch, timestep_range=(min_timestep, max_timestep))
                             val_loss += debiased_loss.detach().item()
                     
                     t_writer.add_scalar("test/test", test_loss / (len(test_dataloader) * val_repeats), global_step * batch_size)
@@ -285,7 +257,7 @@ if __name__ == "__main__":
     dataset_path = "E:/datasets/yann/v1"
     train_steps = 1250
     val_steps = 25
-    seed = 1234
+    seed = 8675309
     batch_size = 4
     val_repeats = 8
     device = "cuda"
