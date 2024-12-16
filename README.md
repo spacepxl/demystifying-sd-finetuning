@@ -8,7 +8,7 @@
 	 - training: random noise, random timestep
  - Analyze loss vs timestep (graph)
  - Introduce stable loss
-   - Constant seed (credit to [/u/fpgaminer](https://old.reddit.com/r/StableDiffusion/comments/1gdkpqp/the_gory_details_of_finetuning_sdxl_for_40m/))
+   - Constant seed
    - SNR compensation
  - Introduce train loss vs test/val loss
    - General ML principles, find external explanation
@@ -71,4 +71,24 @@ It's possible that a better equation could fit the loss curve better and cancel 
 
 ## Stable loss
 
-So, we can take some of the noise out of the training loss curve, but
+So, we can take some of the noise out of the training loss curve, but what if we went one level further? We could periodically evalute some fixed subset of images, using a fixed seed for any random functions, so that the same timesteps and the same noise are used every time. Credit to [/u/fpgaminer](https://old.reddit.com/r/StableDiffusion/comments/1gdkpqp/the_gory_details_of_finetuning_sdxl_for_40m/) for some of the code in my implementation. It's not a new idea, it has been implemented a few times and proposed for some of the popular training tools like kohya-ss/sd-scripts, but never really seemed to catch on.
+
+How it works: every N steps, we stop training, disable gradients, store random states, and manually seed to a fixed value. Then, we evaluate some number of images, average the loss across all of them, log it, then restore the old random states and continue training. See train_sd.py for specifics. I also went a bit further and added timestep buckets (for more uniform distribution across the noise schedule) and debiased loss, to make the average as clean as possible. Now we have a deterministic loss value that gets logged over the training run, which we can use to judge how the model is learning.
+
+![image](https://github.com/user-attachments/assets/6372ab64-97f8-4a2d-837b-7ac40d05f920)
+
+This is what that stable loss curve looks like, evaluated on 2 images in the training dataset. It's nice and clean, which is great, but it's basically a straight line! What's going on? Is it just continuously improving? Should we keep going for more steps to find where it bottoms out?
+
+## Dataset splits
+
+There's a very important principle in machine learning: <ins>Split your dataset into training and validation subsets.</ins> Large neural networks can memorize a lot of data, so in order to evalute whether it's learning good general knowledge, or simply memorizing the specifics of the training data, you need to hold some portion of the data out from the training dataset.
+
+To start with, I'm working with a very small dataset of 22 images, so I will just manually create my splits. I'm keeping 20 images in the training split, and holding out 2 for validation, and hand picking those two to be somewhat representative of the whole set. This is an extremely small dataset by ML standards, but it's a decent example for personalization training. Based on my observations, most people use something in the range of 5-50 images for training an identity model/lora. I think 10% is generally considered a good validation split, but you could use more or less depending on your dataset size. For million+ scale datasets, sampling 100,000 validation images would just be wasteful and unnecessary.
+
+Here's that same training run again, but this time with two stable loss curves - one for training images, and one for validation images:
+
+![image](https://github.com/user-attachments/assets/156437e4-0f3b-49e8-b873-0cb1eec80367)
+
+See that U-shaped curve for validation? That's exactly what we're looking for. The decreasing validation loss means that the model is learning patterns that *generalize to images it has not seen before.* (Not trained on, anyway. Obviously we're evaluating the model on them, but it's not allowed to optimize over them.) As the curve flattens out and starts to rise again, that's where the model is learning patterns that are specific to the images in the training dataset, and don't generalize to the validation set. AKA, overtraining. Note how by the end of this run, the validation loss is actually worse than at the start.
+
+But...do we actually want to stop where validation loss is the lowest? If we were training a model from scratch on a huge dataset, probably. In this case where the goal is to generate images that look like a specific person, maybe that's not ideal. In my opinion, overtraining by some amount can actually improve the quality of generated images, at the expense of some flexibility. But at least this gives us some way to see exactly when we're undertraining or overtraining, and it will be very helpful when we're adjusting hyperparameters like the learning rate.
