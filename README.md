@@ -2,26 +2,26 @@
 
 ## Outline
 
- - Setup: training curves are noisy, how can we identify any meaningful trends?
-   - Background on how diffusion models work, sources of randomness
-     - inference: random noise
-	 - training: random noise, random timestep
- - Analyze loss vs timestep (graph)
- - Introduce stable loss
-   - Constant seed
-   - SNR compensation
- - Introduce train loss vs test/val loss
-   - General ML principles, find external explanation
-   - Show the interaction across a training run on stable losses
- - Demonstrate how loss @ training checkpoints affects generated images, accuracy vs variety tradeoff
- - LR sweep to find optimal steps x lr
-   - Concept: total learning effort?
-   - Should LR scale by batch_size or sqrt(batch_size)? Seems to be sqrt()
- - Test different dataset sizes
- - Test optimizations
- - Random crop?
- - Compare finetune vs lora
- - Call to action: implement stable training loss and validation loss in popular trainer tools (kohya, onetrainer, etc)
+ - [x] Setup: training curves are noisy, how can we identify any meaningful trends?
+   - [x] Background on how diffusion models work, sources of randomness
+     - [ ] inference: random noise
+     - [x] training: random noise, random timestep
+ - [x] Analyze loss vs timestep (graph)
+ - [x] Introduce stable loss
+   - [x] Constant seed
+   - [x] SNR compensation
+ - [x] Introduce train loss vs test/val loss
+   - [ ] General ML principles, find external explanation
+   - [x] Show the interaction across a training run on stable losses
+ - [ ] Demonstrate how loss @ training checkpoints affects generated images, accuracy vs variety tradeoff
+ - [x] LR sweep to find optimal steps x lr
+   - [ ] Concept: total learning effort?
+   - [x] Should LR scale by batch_size or sqrt(batch_size)? Seems to be sqrt()
+ - [ ] Test different dataset sizes
+ - [ ] Test optimizations
+ - [ ] Random crop?
+ - [ ] Compare finetune vs lora
+ - [ ] Call to action: implement stable training loss and validation loss in popular trainer tools (kohya, onetrainer, etc)
 
 ## Introduction
 
@@ -71,13 +71,13 @@ It's possible that a better equation could fit the loss curve better and cancel 
 
 ## Stable loss
 
-So, we can take some of the noise out of the training loss curve, but what if we went one level further? We could periodically evalute some fixed subset of images, using a fixed seed for any random functions, so that the same timesteps and the same noise are used every time. Credit to [/u/fpgaminer](https://old.reddit.com/r/StableDiffusion/comments/1gdkpqp/the_gory_details_of_finetuning_sdxl_for_40m/) for some of the code in my implementation. It's not a new idea, it has been implemented a few times and proposed for some of the popular training tools like kohya-ss/sd-scripts, but never really seemed to catch on.
+So, we can take some of the noise out of the training loss curve, but what if we go one level further? We could periodically evalute some fixed subset of images, using a fixed seed for any random functions, so that the same timesteps and the same noise are used every time. Credit to [/u/fpgaminer](https://old.reddit.com/r/StableDiffusion/comments/1gdkpqp/the_gory_details_of_finetuning_sdxl_for_40m/) for some of the code in my implementation. It's not a completely new idea, but I think it deserves more attention, because it's invaluable for monitoring training progress.
 
-How it works: every N steps, we stop training, disable gradients, store random states, and manually seed to a fixed value. Then, we evaluate some number of images, average the loss across all of them, log it, then restore the old random states and continue training. See train_sd.py for specifics. I also went a bit further and added timestep buckets (for more uniform distribution across the noise schedule) and debiased loss, to make the average as clean as possible. Now we have a deterministic loss value that gets logged over the training run, which we can use to judge how the model is learning.
+How it works: every N steps, we pause training, store the random states, and manually seed to a fixed value. We can evaluate some number of images, average the loss across all of them, log it, then restore the old random states and continue training. See train_sd.py for specifics. I also went a bit further and added timestep buckets (for more uniform distribution across the noise schedule) and debiased loss, to make the average as clean as possible. Now we have a deterministic loss value that gets logged over the training run, which we can use to judge how the model is learning:
 
 ![image](https://github.com/user-attachments/assets/6372ab64-97f8-4a2d-837b-7ac40d05f920)
 
-This is what that stable loss curve looks like, evaluated on 2 images in the training dataset. It's nice and clean, which is great, but it's basically a straight line! What's going on? Is it just continuously improving? Should we keep going for more steps to find where it bottoms out?
+This is what that stable loss curve looks like, evaluated on 2 images in the training dataset. It's nice and clean, which is great, but it's basically a straight line, so what's going on? Is it just continuously improving? Should we keep going for more steps to find where it bottoms out?
 
 ## Dataset splits
 
@@ -101,19 +101,30 @@ Lets's run a sweep of different learning rates, and compare the validation curve
 
 ![image](https://github.com/user-attachments/assets/906d9919-2406-4f99-b542-2e17aca74d0e)
 
-In order from highest to lowest LR, this is [5e-6, 1e-6, 5e-7, 3e-7, 2e-7, 1e-7]. We can see that learning rate does, as expected, have a mostly linear effect on the speed of convergence. More interesting though, it looks like higher learning rates still reach a similar minimum validation loss as lower learning rates, although the higher LR curves are more noisy. If you push the LR too high, it would eventually cause training instability, but below some threshold LR, there seems to be little benefit to going lower unless you need more steps to get through a large dataset. Personally, I would not have expected that the lowest validation loss across these runs would come from the highest tested learning rate after only `20 images * 20 epochs = 400 steps`.
+In order from highest to lowest LR, this is [5e-6, 1e-6, 5e-7, 3e-7, 2e-7, 1e-7]. We can see that learning rate does, as expected, have a mostly linear effect on the speed of convergence. More interesting though, it looks like all the runs reached a similar minimum validation loss, although the higher LR curves are more noisy. If you push the LR too high, it could eventually cause training instability, but below that, there seems to be little benefit to going lower unless you need more steps to get through a large dataset. Personally, I would not have expected that the lowest validation loss across these runs would come from the highest tested learning rate after only `20 images * 20 epochs = 400 steps`.
 
 ## Scaling LR vs Batch Size
 
 The common advice I've seen is that when changing the batch size, you should scale the learning rate linearly with it. This behavior is written into every diffusers example training script, and many other training tools. Older theory stated that you should scale learning rate by the square root of the batch size to keep the variance constant, but about a decade ago it was found that for large batch sizes, it's better to scale linearly (https://arxiv.org/abs/1404.5997).
 
+I'm scaling the logged step by the batch size, so that the curves line up based on the number of images sampled, for more convenient viewing.
+
 Here's a series of runs with learning_rate * batch_size, for batch size in [1, 2, 4]:
 
 ![image](https://github.com/user-attachments/assets/00695a74-6125-4859-a7f8-bb6820bc1299)
-
 
 And here's learning_rate * sqrt(batch_size):
 
 ![image](https://github.com/user-attachments/assets/57c84818-9277-4487-accc-e03961f516ed)
 
-Looks like in this case at least, with a UNet model and small batch sizes, the square root rule is correct. It's possible that DiT models might behave differently. I don't know at what point you would start needing to scale linearly, but if you're training on a single GPU, square root is probably the way to go.
+Looks like in this case at least, with a UNet model and small batch sizes, the square root rule is correct. It's possible that DiT models might behave differently? Further testing is required. I don't know at what point you would start needing to scale linearly, but if you're training on a single GPU, square root is probably the way to go, and if you're using large enough batch sizes to start worrying about this, you should probably be running your own tests instead of blindly following some random guy on the internet :)
+
+[From what I can find](https://github.com/CompVis/stable-diffusion/blob/main/Stable_Diffusion_v1_Model_Card.md), Stable Diffusion 1.5 was originally trained at a batch size of 2048 and a learning rate of 1e-4. If we divide `1e-4 / sqrt(2048)`, we get a base LR of 2.2e-6 for a batch size of 1, which seems reasonable based on the results of the learning rate sweep. If we instead use linear scaling and divide `1e-4 / 2048`, that would give us a base LR of 4.9e-8, which just seems unnecessarily low.
+
+This also shows that the batch size doesn't have much effect on the quality of the result when learning rate is scaled appropriately. I had expected that larger batch sizes might generalize better, but it seems that AdamW does just fine even at `batch_size = 1`. The main benefit of larger batch sizes then, is more efficient hardware utilization:
+
+| batch size | steps |  time |      speed     |
+| ---------- | ------| ----- | -------------- |
+|      1     |  5000 | 34:23 | 2.4 images/sec |
+|      2     |  2500 | 27:44 | 3.0 images/sec |
+|      4     |  1250 | 23:54 | 3.5 images/sec |
