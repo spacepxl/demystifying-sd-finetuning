@@ -91,4 +91,29 @@ Here's that same training run again, but this time with two stable loss curves -
 
 See that U-shaped curve for validation? That's exactly what we're looking for. The decreasing validation loss means that the model is learning patterns that *generalize to images it has not seen before.* (Not trained on, anyway. Obviously we're evaluating the model on them, but it's not allowed to optimize over them.) As the curve flattens out and starts to rise again, that's where the model is learning patterns that are specific to the images in the training dataset, and don't generalize to the validation set. AKA, overtraining. Note how by the end of this run, the validation loss is actually worse than at the start.
 
-But...do we actually want to stop where validation loss is the lowest? If we were training a model from scratch on a huge dataset, probably. In this case where the goal is to generate images that look like a specific person, maybe that's not ideal. In my opinion, overtraining by some amount can actually improve the quality of generated images, at the expense of some flexibility. But at least this gives us some way to see exactly when we're undertraining or overtraining, and it will be very helpful when we're adjusting hyperparameters like the learning rate.
+But...do we actually want to stop where validation loss is the lowest? If we were training a model from scratch on a huge dataset, probably. In this case where the goal is to generate images that look like a specific person, maybe that's not ideal. It's possible that overtraining by some amount could actually improve the quality of generated images, at the expense of some flexibility. But at least this gives us some way to see exactly when we're undertraining or overtraining, and it will be very helpful when we're adjusting hyperparameters like the learning rate.
+
+# ADD SAMPLE IMAGES
+
+## Learning Rate sweep
+
+Lets's run a sweep of different learning rates, and compare the validation curves.
+
+![image](https://github.com/user-attachments/assets/906d9919-2406-4f99-b542-2e17aca74d0e)
+
+In order from highest to lowest LR, this is [5e-6, 1e-6, 5e-7, 3e-7, 2e-7, 1e-7]. We can see that learning rate does, as expected, have a mostly linear effect on the speed of convergence. More interesting though, it looks like higher learning rates still reach a similar minimum validation loss as lower learning rates, although the higher LR curves are more noisy. If you push the LR too high, it would eventually cause training instability, but below some threshold LR, there seems to be little benefit to going lower unless you need more steps to get through a large dataset. Personally, I would not have expected that the lowest validation loss across these runs would come from the highest tested learning rate after only `20 images * 20 epochs = 400 steps`.
+
+## Scaling LR vs Batch Size
+
+The common advice I've seen is that when changing the batch size, you should scale the learning rate linearly with it. This behavior is written into every diffusers example training script, and many other training tools. Older theory stated that you should scale learning rate by the square root of the batch size to keep the variance constant, but about a decade ago it was found that for large batch sizes, it's better to scale linearly (https://arxiv.org/abs/1404.5997).
+
+Here's a series of runs with learning_rate * batch_size, for batch size in [1, 2, 4]:
+
+![image](https://github.com/user-attachments/assets/00695a74-6125-4859-a7f8-bb6820bc1299)
+
+
+And here's learning_rate * sqrt(batch_size):
+
+![image](https://github.com/user-attachments/assets/57c84818-9277-4487-accc-e03961f516ed)
+
+Looks like in this case at least, with a UNet model and small batch sizes, the square root rule is correct. It's possible that DiT models might behave differently. I don't know at what point you would start needing to scale linearly, but if you're training on a single GPU, square root is probably the way to go.
