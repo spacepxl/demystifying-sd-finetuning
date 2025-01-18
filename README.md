@@ -128,3 +128,17 @@ This also shows that the batch size doesn't have much effect on the quality of t
 |      1     |  5000 | 34:23 | 2.4 images/sec |
 |      2     |  2500 | 27:44 | 3.0 images/sec |
 |      4     |  1250 | 23:54 | 3.5 images/sec |
+
+## Text encoder training
+
+Is it a good idea to train the text encoder(s)? Is it bad? Does it even matter? All of the major image diffusion models that I'm aware of use unmodified pretrained text encoders, rather than finetuning them in the context of image generation. Some community members believe that it can help, if done right, but it also seems that using too high a learning rate for the text encoder, or training it for too long, can cause it to collapse in some way. A common rule is to either use a lower learning rate for the text encoder compared to the diffusion model, or else stop training it after some number of steps. I tested training the text encoder for all steps, at different multipliers [1x, 0.5x, 0.25x] of the unet learning rate.
+
+![image](https://github.com/user-attachments/assets/be3fcb34-84d2-49b2-a0c0-3506fb2d4627)
+
+![image](https://github.com/user-attachments/assets/678d9ca8-1d24-486e-9a00-1675de0cfec7)
+
+Very close results, although it does move the curves to the left slightly, probably just due to the increased number of trainable parameters. The minimum loss doesn't change meaningfully though, similar to with the learning rate sweeps. One way to think of it: if we consider the unet-only case as an example of `unet @ lr` and `te @ (lr * 0)`, we're effectively just increasing the average learning rate over the combination of both models. That left/right shift could lead people to falsely believe that enabling/disabling text encoder training helped or hurt, when really it just changed the number of training steps required for an equivalent result.
+
+Worth noting that the captions for this dataset are probably in distribution for CLIP, so your results may vary. Most concepts will be in distribution already though, to be fair, since CLIP was trained on internet scale data. ([From the paper](https://arxiv.org/abs/2103.00020), they collect 400M image/text pairs based on searching for any word that appears in english wikipedia at least 100 times (500k total concepts), and approximately class balance by limiting each query to 20k results. No other forms of filtering.)
+
+I suspect that if you want to add concepts that are actually new, not just new instances of an existing concept, it might be better to finetune CLIP with its original image encoder and contrastive loss, as that would allow it to actually learn the new concepts in their proper context rather than just treating the text encoder like an embedding layer. [Few people have even attempted real CLIP training though.](https://huggingface.co/zer0int)
