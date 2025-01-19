@@ -20,6 +20,7 @@
  - [ ] Test different dataset sizes
  - [ ] Test optimizations
  - [ ] Random crop?
+ - [x] Seed
  - [x] Text encoder training
  - [ ] Compare finetune vs lora
  - [ ] Call to action: implement stable training loss and validation loss in popular trainer tools (kohya, onetrainer, etc)
@@ -131,6 +132,14 @@ This also shows that the batch size doesn't have much effect on the quality of t
 |      1     |  5000 | 34:23 | 2.4 images/sec |
 |      2     |  2500 | 27:44 | 3.0 images/sec |
 |      4     |  1250 | 23:54 | 3.5 images/sec |
+
+## Seed
+
+This one's simple enough, are some seeds better than others?
+
+![image](https://github.com/user-attachments/assets/22247070-3908-49a2-8118-2428479580b8)
+
+Nope, doesn't make any meaningful difference. Moving on...
 
 ## Text encoder training
 
