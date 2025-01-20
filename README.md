@@ -13,7 +13,7 @@
  - [x] Introduce train loss vs test/val loss
    - [ ] General ML principles, find external explanation
    - [x] Show the interaction across a training run on stable losses
- - [ ] Demonstrate how loss @ training checkpoints affects generated images, accuracy vs variety tradeoff
+ - [x] Demonstrate how loss @ training checkpoints affects generated images, accuracy vs variety tradeoff
  - [x] LR sweep to find optimal steps x lr
    - [ ] Concept: total learning effort?
    - [x] Should LR scale by batch_size or sqrt(batch_size)? Seems to be sqrt()
@@ -97,7 +97,7 @@ But...do we actually want to stop where validation loss is the lowest? If we wer
 
 ![checkpoint_grid_8_half](https://github.com/user-attachments/assets/fb868a29-b7d8-4165-a667-57947c3d88f8)
 
-Looking at a grid of samples from checkpoints along the training run, we can see that overtraining doesn't immediately hurt image quality. Instead it reaches good likeness around the minimum validation loss point at 2000 steps, then slowly starts to lose variety as it continues on. By the end, the variety of color and composition is severely reduced compared to the base model. If we consider the point of minimum validation loss to be 1.0 on our ruler, I would say that the range of 1-3 (steps 2000-6000 in this case) is what I would consider usable, and I would probably test several checkpoints from that range more thoroughly with different prompts and experiment with merging them together.
+Looking at a grid of samples from checkpoints along the training run, we can see that overtraining doesn't immediately hurt image quality. Instead it reaches good likeness around the minimum validation loss point at 2000 steps, then slowly starts to lose variety as it continues on. By the end, the variety of color and composition is severely reduced compared to the base model. In this case I would consider steps 2000-6000 to be usable, and I would probably test several checkpoints from that range more thoroughly with different prompts and experiment with merging them together.
 
 ## Learning Rate sweep
 
@@ -154,3 +154,31 @@ Very close results, although it does move the curves to the left slightly, proba
 Worth noting that the captions for this dataset are probably in distribution for CLIP, so your results may vary. Most concepts will be in distribution already though, to be fair, since CLIP was trained on internet scale data. ([According to the paper,](https://arxiv.org/abs/2103.00020) they collect 400M image/text pairs based on searching for any word that appears in english wikipedia at least 100 times (500k total concepts), and approximately class balance by limiting each query to 20k results. No other forms of filtering.)
 
 I suspect that if you want to add concepts that are actually new, not just new instances of an existing concept, it might be better to finetune CLIP with its original image encoder and contrastive loss, as that would allow it to actually learn the new concepts in their proper context rather than just treating the text encoder like an embedding layer. [Few people have even attempted real CLIP training though.](https://huggingface.co/zer0int)
+
+## Lora
+
+So far we've only been doing full parameter finetuning. Now, I'll use LoRA instead, using the PEFT library in the same way as diffusers example training scripts. Specifically, I'm only applying LoRA to the UNet since we already established that there was no benefit to training the text encoder. And to start with, I'm targeting only the attention layers, which is what diffusers and kohya do by default.
+
+Right away, we have to adjust learning rate up compared to full parameter finetuning. We also have some new hyperparameters to consider: rank and alpha. Rank controls the size of the lora, or the number of parameters to add. Alpha is a scaling factor for the lora weights, ostensibly to help with numerical precision. However, because the lora weights are scaled by `alpha / rank` when applied to the model, the alpha also affects the speed at which the network learns, acting like a multiplier to the learning rate.
+
+The common suggestions for alpha are either to leave it at 1, set it equal to rank, or else some multiple of rank, like rank / 2 or rank * 2. Here's a sweep of different alpha values while holding rank constant and adjusting learning rate to maintain the same convergence speed:
+
+![image](https://github.com/user-attachments/assets/80bdadb5-0f53-40f8-806b-bb4e930df174)
+
+Square root scaling makes a return here. According to the authors of [the lycoris paper](https://arxiv.org/abs/2309.14859), when using Adam-like optimizers, if you divide alpha by k, you should multiply learning rate by sqrt(k), not k. For SGD, you would multiply by k. I wasn't aware of this before, and only stumbled on into this knowledge after running these tests. Previously I had followed the often repeated rule of scaling by k, despite that being wrong for most commonly used optimizers. Interestingly though, it's not exactly sqrt(k), I had to bump the lr slightly higher (1.5e-4 instead of 1.1e-4) at alpha=1 to get the same convergence speed. Maybe something relating to weight decay or other optimizer parameters? Not sure.
+
+Here's what happens if we change rank with alpha=rank and learning rate fixed:
+
+![image](https://github.com/user-attachments/assets/f0957b0e-3921-44ce-b9f2-2fd65b480187)
+
+Again, you can see that because we changed alpha, we would also need to adjust the learning rate to get the same convergence speed. If instead we set alpha to a constant value like 1, we can keep the same learning rate and change rank without affecting the convergence speed:
+
+![image](https://github.com/user-attachments/assets/45de4ba1-ad4c-4026-95f3-5d16412eaf6c)
+
+There doesn't seem to be any downside to keeping alpha=1, and it's much easier to deal with when changing rank, so that's what I'll stick with from this point on. 
+
+We can see that lower ranks performed worse than higher ranks, which isn't surprising. More parameters means more capacity to learn, and more degrees of freedom, which makes it easier to optimize. However, even at rank=128 we still have a significant gap compared to full finetuning:
+
+![image](https://github.com/user-attachments/assets/4c9e5b74-4c14-4a37-8296-590c65845f22)
+
+todo: add MLP and/or conv
