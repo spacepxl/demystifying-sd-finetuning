@@ -190,3 +190,13 @@ Looks like that closed the performance gap completely, at the cost of nearly dou
 ## Optimizers
 
 I'll return to full parameter UNet finetuning at this point for simplicity. Does optimizer choice affect the final result, or do they all converge to the same miminum?
+
+![image](https://github.com/user-attachments/assets/0d2c8d1a-bec7-4d57-aa10-907d2c7f4657)
+
+Looks like AdamW is best, but AdamW8bit is free real estate. Equal performance with less memory used, and no need to change hyperparameters. Adafactor and SGD both required higher learning rates, and neither was able to hit AdamW's minimum. This was expected for Adafactor, but a bit surprising for SGD, which is known to reach higher classifier accuracy in some cases. SGD does use less memory, and is slightly faster in terms of it/s. Adafactor for some reason was less than half as fast as AdamW, not sure if that's expected or a bug.
+
+What about weight decay? I've been using 1e-4 weight decay across the board so far, on the (probably false) assumption that the default 0.01 was meant for larger batch sizes.
+
+![image](https://github.com/user-attachments/assets/47510626-3826-4634-8165-c916aa039978)
+
+The result at 0.1 was basically identical to 1e-4, and I had to go up to 10+ to see any effect. I think this might be more relevant for much longer training runs, but in this short term finetuning regime, you can leave it at default, or disable it entirely, it doesn't matter. Increasing weight decay was harmful across the board, and the same trend was true for SGD.
