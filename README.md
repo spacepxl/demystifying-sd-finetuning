@@ -22,7 +22,7 @@
  - [ ] Random crop?
  - [x] Seed
  - [x] Text encoder training
- - [ ] Compare finetune vs lora
+ - [x] Compare finetune vs lora
  - [ ] Call to action: implement stable training loss and validation loss in popular trainer tools (kohya, onetrainer, etc)
 
 ## Introduction
@@ -181,4 +181,12 @@ We can see that lower ranks performed worse than higher ranks, which isn't surpr
 
 ![image](https://github.com/user-attachments/assets/4c9e5b74-4c14-4a37-8296-590c65845f22)
 
-todo: add MLP and/or conv
+So far we've only been applying the lora to the attention weights ("to_k", "to_q", "to_v", "to_out.0", "add_k_proj", "add_v_proj"). Next, let's add in the MLP/feedforward layers, the other major part of the transformer blocks.
+
+![image](https://github.com/user-attachments/assets/a20bdedf-e890-4b3e-a71b-a8b60af2e0f9)
+
+Looks like that closed the performance gap completely, at the cost of nearly doubling the trainable parameters. I also tested adding the resnet convolution layers, but that didn't improve any further, and it more than doubled the parameters again, so I'd say it wasn't worth it. At this point we could start experimenting with lower ranks and other variations like lycoris, dora, etc, but I'll leave it there for now.
+
+## Optimizers
+
+I'll return to full parameter UNet finetuning at this point for simplicity. Does optimizer choice affect the final result, or do they all converge to the same miminum?
