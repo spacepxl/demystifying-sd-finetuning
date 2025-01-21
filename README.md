@@ -4,22 +4,19 @@
 
  - [x] Setup: training curves are noisy, how can we identify any meaningful trends?
    - [x] Background on how diffusion models work, sources of randomness
-     - [ ] inference: random noise
      - [x] training: random noise, random timestep
  - [x] Analyze loss vs timestep (graph)
  - [x] Introduce stable loss
    - [x] Constant seed
    - [x] SNR compensation
  - [x] Introduce train loss vs test/val loss
-   - [ ] General ML principles, find external explanation
    - [x] Show the interaction across a training run on stable losses
  - [x] Demonstrate how loss @ training checkpoints affects generated images, accuracy vs variety tradeoff
  - [x] LR sweep to find optimal steps x lr
-   - [ ] Concept: total learning effort?
    - [x] Should LR scale by batch_size or sqrt(batch_size)? Seems to be sqrt()
- - [ ] Test different dataset sizes
- - [ ] Test optimizations
- - [ ] Random crop?
+ - [x] Test different dataset sizes
+ - [x] Test optimizations
+ - [x] Random crop?
  - [x] Seed
  - [x] Text encoder training
  - [x] Compare finetune vs lora
@@ -220,3 +217,12 @@ The larger dataset also seems to counter the earlier observation of higher learn
 ![image](https://github.com/user-attachments/assets/6b1d1694-e8aa-405f-ad61-f26c785f513b)
 
 What if we don't have more images though? Is there anything we can do to augment a smaller dataset to improve the performance?
+
+Random cropping is well known to improve performance on vision models. We can apply it here, with some caveats. It won't work with latent preprocessing, since the latents need to be re-encoded for each new crop. And there's some risk of image-caption misalignment, because you could crop out something that's in the caption.
+
+![image](https://github.com/user-attachments/assets/6693f84c-9d9c-43e5-85a4-39f00616d23b)
+
+The results are pretty compelling, though. Adding random crop seems to simulate a larger dataset. We could add other augmentations as well, like horizontal flip (assuming the content isn't direction sensitive, like text for example), random color adjustments, etc.
+
+## Conclusion
+
