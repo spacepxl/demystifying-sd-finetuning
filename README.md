@@ -200,3 +200,23 @@ What about weight decay? I've been using 1e-4 weight decay across the board so f
 ![image](https://github.com/user-attachments/assets/47510626-3826-4634-8165-c916aa039978)
 
 The result at 0.1 was basically identical to 1e-4, and I had to go up to 10+ to see any effect. I think this might be more relevant for much longer training runs, but in this short term finetuning regime, you can leave it at default, or disable it entirely, it doesn't matter. Increasing weight decay was harmful across the board, and the same trend was true for SGD.
+
+## Dataset
+
+So far, we've seen that some things like optimizer choice and trainable parameters can hurt our minimum loss, but what if anything can actually improve it? The first knob to turn here is dataset size, and for that I'm going to experiment with a slightly larger dataset, with 270 images in the training set and 8 held out for validation. I'll run a series of smaller random subsets of the training set, so we can see if there's a benefit to training with more images. All runs are evaluated on the same validation set for consistency.
+
+![image](https://github.com/user-attachments/assets/1a8844d2-30bc-44dc-89a1-08c246d25f93)
+
+Hopefully this lays to rest any ideas of "less is more". Assuming the added images are of similar quality, adding more and training for longer does help. There's probably an explanation for all of this by thinking of the dataset as a limited sample of an underlying data distribution. In that way, it would make sense that more samples would lead to a better model of the true distribution, and thus generalize better to a different set of samples from that same distribution. But that's just my intuition, it's not something I claim to understand fully.
+
+The step scaling here doesn't exactly line up with any consistent rule though. The smaller runs look like they're setting up nicely for square root scaling again, but then the full 270-image run goes and screws that all up:
+
+![image](https://github.com/user-attachments/assets/93abd4b0-6143-4a4a-b200-3c7fc71c1058)
+
+It would be interesting to train on a very large number of datsets of many different sizes and establish an actual scaling law for this, but that's well outside the scope of this project.
+
+The larger dataset also seems to counter the earlier observation of higher learning rates not hurting loss:
+
+![image](https://github.com/user-attachments/assets/6b1d1694-e8aa-405f-ad61-f26c785f513b)
+
+What if we don't have more images though? Is there anything we can do to augment a smaller dataset to improve the performance?
