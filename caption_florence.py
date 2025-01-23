@@ -51,7 +51,7 @@ def caption(base_folder, model, processor, device, dtype):
 
 
 if __name__ == "__main__":
-    dataset_dir = "E:/datasets/yann/v1"
+    dataset_dir = "./datasets/example"
     train_path = os.path.join(dataset_dir, "train")
     val_path = os.path.join(dataset_dir, "val")
     device = "cuda"

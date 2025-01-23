@@ -15,10 +15,14 @@ from torchvision.transforms import v2, InterpolationMode
 from torchvision.io import read_image
 from torchvision.utils import save_image
 
+from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict, set_peft_model_state_dict
 from transformers import CLIPTextModel, CLIPTokenizer
+
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.training_utils import compute_snr
-
+from diffusers.utils import convert_state_dict_to_diffusers
+from diffusers.loaders import StableDiffusionLoraLoaderMixin
 
 class T2iDataset(Dataset):
     def __init__(self, root_folder, resolution=512, random_crop=False):
@@ -95,8 +99,8 @@ def train(
     output_path = "./experiments/",
     dataset_path = None,
     lr = 1e-4,
-    train_te = False,
-    te_lr_mult = 0.5,
+    rank = 8,
+    alpha = 1,
     train_steps = 1000,
     save_steps = 1000,
     val_steps = 100,
@@ -163,37 +167,30 @@ def train(
     vae = AutoencoderKL.from_pretrained(hf_identifier, subfolder="vae").to(device)
     unet = UNet2DConditionModel.from_pretrained(hf_identifier, subfolder="unet").to(device)
     
-    if train_te:
-        text_encoder.requires_grad_(True)
-        text_encoder.train()
-    else:
-        text_encoder.requires_grad_(False)
-    
+    text_encoder.requires_grad_(False)
     vae.requires_grad_(False)
-    unet.requires_grad_(True)
+    unet.requires_grad_(False)
+    
+    # lora target options: attn, attn+ff, attn+ff+resnet
+    # target_modules = ["to_k", "to_q", "to_v", "to_out.0", "add_k_proj", "add_v_proj"]
+    target_modules = ["to_k", "to_q", "to_v", "to_out.0", "add_k_proj", "add_v_proj", "ff.net.0.proj", "ff.net.2"]
+    # target_modules = ["to_k", "to_q", "to_v", "to_out.0", "add_k_proj", "add_v_proj", "ff.net.0.proj", "ff.net.2", "conv1", "conv2"]
+    
+    unet_lora_config = LoraConfig(
+        r = rank,
+        lora_alpha = alpha,
+        init_lora_weights = "gaussian",
+        target_modules = target_modules,
+    )
+    unet.add_adapter(unet_lora_config)
     unet.train()
     
     train_lr = lr * (batch_size ** 0.5)
-    
-    optim_cls = torch.optim.AdamW
-    # optim_cls = torch.optim.Adafactor
-    # optim_cls = torch.optim.SGD
-    # import bitsandbytes as bnb
-    # optim_cls = bnb.optim.AdamW8bit
-    
-    if train_te:
-        optimizer = optim_cls([
-                {"params": unet.parameters()},
-                {"params": text_encoder.parameters(), "lr": train_lr * te_lr_mult},
-            ],
-            lr = train_lr,
-        )
-    else:
-        optimizer = optim_cls(
-            unet.parameters(),
-            lr = train_lr,
-            # weight_decay = 1e-4,
-        )
+    optimizer = torch.optim.AdamW(
+        params = list(filter(lambda p: p.requires_grad, unet.parameters())),
+        lr = train_lr,
+        weight_decay = 1e-4,
+    )
     
     global_step = 0
     train_logs = {"train_step": [], "train_loss": [], "train_timestep": []}
@@ -264,6 +261,18 @@ def train(
         plt.ylabel("loss")
         plt.yscale("log")
     
+    def save_lora(global_step):
+        save_path = os.path.join(output_path, f"checkpoint-{global_step:08}")
+        unet_lora_layers = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
+        lora_sd_to_save = {}
+        for key in unet_lora_layers.keys():
+            lora_sd_to_save[key] = unet_lora_layers[key]
+            for pattern in ["lora.down.weight", "lora_A.weight"]:
+                if pattern in key:
+                    alpha_key = key.replace(pattern, "alpha")
+                    lora_sd_to_save[alpha_key] = torch.tensor([alpha])
+        StableDiffusionLoraLoaderMixin.save_lora_weights(save_path, unet_lora_layers=lora_sd_to_save)
+    
     progress_bar = tqdm(range(0, train_steps))
     while global_step < train_steps:
         for step, batch in enumerate(train_dataloader):
@@ -312,17 +321,14 @@ def train(
                     t_writer.add_scalar("test/val", val_loss / (len(val_dataloader) * val_repeats), global_step * batch_size)
             
             if global_step >= train_steps or global_step % save_steps == 0:
-                checkpoint_path = os.path.join(output_path, f"checkpoint-{global_step:08}")
-                unet.save_pretrained(os.path.join(checkpoint_path, "unet"), safe_serialization=True)
-                if train_te:
-                    text_encoder.save_pretrained(os.path.join(checkpoint_path, "text_encoder"), safe_serialization=True)
+                save_lora(global_step)
             
             if global_step >= train_steps:
                 break
 
 
 if __name__ == "__main__":
-    experiment_name = "./experiments/example_finetune"
+    experiment_name = "./experiments/example_lora"
     
     # dataset subfolders: example/train, example/test, example/val
     dataset_path = "./datasets/example"
@@ -330,9 +336,11 @@ if __name__ == "__main__":
     train(
         output_path = experiment_name,
         dataset_path = dataset_path,
-        lr = 5e-7,
-        train_steps = 25_000,
-        save_steps = 5_000,
+        lr = 1.5e-4,
+        rank = 128,
+        alpha = 1,
+        train_steps = 5000,
+        save_steps = 500,
         val_steps = 500,
         seed = 1234,
         val_seed = 1234,
