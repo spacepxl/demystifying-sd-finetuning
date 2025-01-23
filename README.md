@@ -1,30 +1,8 @@
 # demystifying-sd-finetuning
 
-## Outline
-
- - [x] Setup: training curves are noisy, how can we identify any meaningful trends?
-   - [x] Background on how diffusion models work, sources of randomness
-     - [x] training: random noise, random timestep
- - [x] Analyze loss vs timestep (graph)
- - [x] Introduce stable loss
-   - [x] Constant seed
-   - [x] SNR compensation
- - [x] Introduce train loss vs test/val loss
-   - [x] Show the interaction across a training run on stable losses
- - [x] Demonstrate how loss @ training checkpoints affects generated images, accuracy vs variety tradeoff
- - [x] LR sweep to find optimal steps x lr
-   - [x] Should LR scale by batch_size or sqrt(batch_size)? Seems to be sqrt()
- - [x] Test different dataset sizes
- - [x] Test optimizations
- - [x] Random crop?
- - [x] Seed
- - [x] Text encoder training
- - [x] Compare finetune vs lora
- - [ ] Call to action: implement stable training loss and validation loss in popular trainer tools (kohya, onetrainer, etc)
-
 ## Introduction
 
-Finetuning large pretrained diffusion models like Stable Diffusion (or rf models like Flux, SD3, etc) can be diffucult, requiring a large amount of trial and error to get right. There are probably a thousand different videos and articles giving advice and tips by now, but most of them fit into the category of "here's what I found through trial and error, now copy my settings". This is hopefully different. My aim here is to explain why it's such a hard problem to find clear answers, and how with the appropriate tools, you can find those answers for yourself much more easily. I'm going to use stable diffusion 1.5 for all the experiments here, but that's just for the sake of speed, and the same principles will apply to any diffusion or flow model.
+Finetuning large pretrained diffusion models like Stable Diffusion (or flow models like Flux, SD3, etc) can be difficult, requiring a large amount of trial and error to get right. There are probably a thousand different videos and articles giving advice and tips by now, but most of them fit into the category of "here's what I found through trial and error, now copy my settings". This is hopefully a bit different. My aim here is to explain why it's such a hard problem to find clear answers, and how with the appropriate tools, you can find those answers for yourself much more easily. I'm going to use stable diffusion 1.5 for all the experiments here, but that's just for the sake of speed, and the same principles will apply to any diffusion/flow model.
 
 ## Training loss curves are noisy
 
@@ -34,7 +12,7 @@ If you've finetuned SD or trained a lora before, you've probably spent some time
 
 ...and trying to look for meaning in it. Does it drop slightly over time, or is that just random movement? SHOULD you be able to see a pattern?
 
-(spoiler: probably not, in most cases)
+(spoiler: no)
 
 In order to understand why this is so noisy, first we need to look at the training process itself. This is a simplified version of how sd1.5 is called during training:
 
@@ -82,7 +60,7 @@ This is what that stable loss curve looks like, evaluated on a test set of 2 ima
 
 There's a very important principle in machine learning: <ins>Split your dataset into training and validation subsets.</ins> Large neural networks can memorize a lot of data, so in order to evalute whether it's learning good general knowledge, or simply memorizing the specifics of the training data, you need to hold some portion of the data out from the training dataset.
 
-To start with, I'm working with a very small dataset of 22 images, so I will just manually create my splits. I'm keeping 20 images in the training split, and holding out 2 for validation, and hand picking those two to be somewhat representative of the whole set. This is an extremely small dataset by ML standards, but it's a decent example for personalization training. Based on my observations, most people use something in the range of 5-50 images for training an identity model/lora. I went for a 10% split since my dataset is so small, but you could use more or less depending on your dataset size. For million+ scale datasets, sampling 100,000 validation images would just be wasteful and unnecessary.
+To start with, I'm working with a very small dataset of 22 images, so I will just manually create my splits. I'm keeping 20 images in the training split, and holding out 2 for validation, and hand picking those two to be somewhat representative of the whole set. This is an extremely small dataset by ML standards, but it's a decent example for personalization training. Based on my observations, most people use something in the range of 5-50 images for training an identity model/lora. We'll come back to dataset size later.
 
 Here's that same training run again, but this time with two stable loss curves - one for our test set which has images that are also in the training set, and one for the validation set which is held out from training:
 
@@ -102,7 +80,7 @@ Lets's run a sweep of different learning rates, and compare the validation curve
 
 ![image](https://github.com/user-attachments/assets/906d9919-2406-4f99-b542-2e17aca74d0e)
 
-In order from highest to lowest LR, this is [5e-6, 1e-6, 5e-7, 3e-7, 2e-7, 1e-7]. We can see that learning rate does, as expected, have a mostly linear effect on the speed of convergence. More interesting though, it looks like all the runs reached a similar minimum validation loss, although the higher LR curves are more noisy. If you push the LR too high, it could eventually cause training instability, but below that threshold, there seems to be little benefit to going lower, unless you specifically need more steps to get through a large dataset. This went against my intuition, as I had previously belived that a lower learning rate for more steps would give a better result, but the numbers don't lie.
+In order from highest to lowest LR, this is [5e-6, 1e-6, 5e-7, 3e-7, 2e-7, 1e-7]. We can see that learning rate does, as expected, have a mostly linear effect on the speed of convergence. More interesting though, it looks like all the runs reached a similar minimum validation loss, although the higher LR curves are more noisy. If you push the LR too high, it could eventually cause training instability, but below that threshold, this dataset didn't benefit from lowering the learning rate. With a larger dataset, you'll need a lower learning rate and more steps to get through all the images, but for a small dataset, maybe it doesn't matter? This went against my intuition, as I had previously belived that a lower learning rate for more steps would give a better result, but the numbers don't lie.
 
 ## Scaling LR vs Batch Size
 
@@ -226,3 +204,10 @@ The results are pretty compelling, though. Adding random crop seems to simulate 
 
 ## Conclusion
 
+To round things out, I trained a rank-128, attention+feedforward lora on the full dataset with random cropping. It beat the the full finetune without random crop, but fell short of the finetune with random crop. Something interesting also happened in the stable training loss, which I have no explanation for yet. Something for future investigation, maybe.
+
+![image](https://github.com/user-attachments/assets/63c536f9-1905-48d7-a64a-7257918519d9)
+
+What to take away from all of this? Well, I hope I've shed some light on some of the hidden dynamics at play behind finetuning, but above all, I would like to encourage the use of stable loss and validation splits. It could be implemented in a number of different ways, depending on personal preference, but none of them are particularly difficult. I hope that popular training tools will adopt it. Onetrainer already has support for validation loss, but right now it's using random timesteps and noise, which makes it not very useful. Kohya has had PRs for validation loss for ages, but not merged, and again with random noise/timesteps. I hope this has shown why it's not just nice to have, but in fact *essential* for making informed decisions instead of guessing based on a few image samples and loss curves that are dominated by noise.
+
+I'm including the two basic training scripts I used for this, one for finetuning and one for lora training. They're a bit rough around the edges, but the simplicity makes them easier to modify and experiment with. I'm also including all the tensorboard logs for anyone who wants to scrutinize them in more detail. Happy training!
