@@ -1,5 +1,9 @@
 # demystifying-sd-finetuning
 
+Update:
+
+[I've created a basic utility for comfyui which measures loss across timesteps.](https://github.com/spacepxl/ComfyUI-LossTesting) It should work with any natively supported models by taking advantage of comfyui's abstractions for ksampler.
+
 ## Introduction
 
 Finetuning large pretrained diffusion models like Stable Diffusion (or flow models like Flux, SD3, etc) can be difficult, requiring a large amount of trial and error to get right. There are probably a thousand different videos and articles giving advice and tips by now, but most of them fit into the category of "here's what I found through trial and error, now copy my settings". This is hopefully a bit different. My aim here is to explain why it's such a hard problem to find clear answers, and how with the appropriate tools, you can find those answers for yourself much more easily. I'm going to use stable diffusion 1.5 for all the experiments here, but that's just for the sake of speed, and the same principles will apply to any diffusion/flow model.
