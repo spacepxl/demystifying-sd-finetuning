@@ -1,8 +1,14 @@
 # demystifying-sd-finetuning
 
-Update:
+## Updates:
 
 [I've created a basic utility for comfyui which measures loss across timesteps.](https://github.com/spacepxl/ComfyUI-LossTesting) It should work with any natively supported models by taking advantage of comfyui's abstractions for ksampler.
+
+[Onetrainer now has a basic implementation of deterministic validation loss](https://github.com/Nerogar/OneTrainer/pull/660)
+
+[Kohya sd-scripts has non-deterministic validation loss now, and deterministic is in progress](https://github.com/kohya-ss/sd-scripts/pull/1903)
+
+[Musubi PR in progress](https://github.com/kohya-ss/musubi-tuner/pull/63)
 
 ## Introduction
 
@@ -212,6 +218,6 @@ To round things out, I trained a rank-128, attention+feedforward lora on the ful
 
 ## Conclusion
 
-What to take away from all of this? Well, I hope I've shed some light on some of the hidden dynamics at play behind finetuning, but above all, I would like to encourage the use of stable loss and validation splits. It could be implemented in a number of different ways, depending on personal preference, but none of them are particularly difficult. I hope that popular training tools will adopt it. Onetrainer already has support for validation loss, but right now it's using random timesteps and noise, which makes it not very useful. Kohya has had PRs for validation loss for ages, but not merged, and again with random noise/timesteps. I hope this has shown why it's not just nice to have, but in fact *essential* for making informed decisions instead of guessing based on a few image samples and loss curves that are dominated by noise.
+What to take away from all of this? Well, I hope I've shed some light on some of the hidden dynamics at play behind finetuning, but above all, I would like to encourage the use of stable loss and validation splits. It could be implemented in a number of different ways, depending on personal preference, but none of them are particularly difficult. I hope this has shown why it's not just nice to have, but in fact *essential* for making informed decisions instead of guessing based on a few image samples and loss curves that are dominated by noise.
 
 I'm including the two basic training scripts I used for this, one for finetuning and one for lora training. They're a bit rough around the edges, but the simplicity makes them easier to modify and experiment with. I'm also including all the tensorboard logs for anyone who wants to scrutinize them in more detail. Happy training!
